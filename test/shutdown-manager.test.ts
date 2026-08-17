@@ -167,6 +167,50 @@ describe('ShutdownManager', () => {
 
       expect(result).toBe(manager);
     });
+
+    it('attaches process signal listener and exits 0 on successful shutdown', async () => {
+      const exitSpy = vi.spyOn(process, 'exit').mockImplementation(() => undefined as never);
+      const manager = createShutdownManager({ logger: silentLogger() });
+      manager.addPhase('a', () => {}).listen();
+
+      // Emit SIGTERM signal to trigger the installed signal handler
+      process.emit('SIGTERM');
+
+      // Wait microtask for trigger promise to resolve
+      await new Promise((r) => setTimeout(r, 50));
+
+      expect(exitSpy).toHaveBeenCalledWith(0);
+    });
+
+    it('exits with error code 1 when shutdown phase fails via signal listener', () => {
+      const exitSpy = vi.spyOn(process, 'exit').mockImplementation(() => undefined as never);
+      const manager = createShutdownManager({ logger: silentLogger() });
+      manager.addPhase('failing', () => {}, { after: ['unknown-dep'] }).listen();
+
+      process.emit('SIGTERM');
+
+      return new Promise<void>((resolve) => {
+        setTimeout(() => {
+          expect(exitSpy).toHaveBeenCalledWith(1);
+          resolve();
+        }, 50);
+      });
+    });
+
+    it('forces exit 1 on double signal', () => {
+      const exitSpy = vi.spyOn(process, 'exit').mockImplementation(() => undefined as never);
+      const manager = createShutdownManager({ logger: silentLogger() });
+      manager
+        .addPhase('slow', () => new Promise<void>((r) => setTimeout(r, 200)))
+        .listen();
+
+      // First signal starts shutdown
+      process.emit('SIGTERM');
+      // Second signal triggers double-signal force-exit
+      process.emit('SIGTERM');
+
+      expect(exitSpy).toHaveBeenCalledWith(1);
+    });
   });
 
   describe('Lifecycle callbacks', () => {

@@ -179,6 +179,36 @@ describe('Scheduler', () => {
       expect(failedPhase).toBeDefined();
       expect(failedPhase?.error).toBeInstanceOf(PhaseTimeoutError);
     });
+
+    it('reports remaining phases when global budget is exhausted between waves', async () => {
+      const callbacks = noopCallbacks();
+      const GLOBAL_TIMEOUT_MS = 80;
+
+      // Wave 1: 'fast-but-slow-enough' takes just long enough to exhaust the budget
+      // Wave 2: 'after-phase' should be abandoned because budget is gone
+      const fastPhase = makePhase({
+        name: 'fast-but-slow-enough',
+        fn: () => new Promise<void>((r) => setTimeout(r, GLOBAL_TIMEOUT_MS + 50)),
+        timeout: GLOBAL_TIMEOUT_MS + 50,
+      });
+      const afterPhase = makePhase({
+        name: 'after-phase',
+        after: ['fast-but-slow-enough'],
+        fn: () => Promise.resolve(),
+      });
+
+      const result = await runScheduler(
+        [fastPhase, afterPhase],
+        GLOBAL_TIMEOUT_MS,
+        callbacks,
+        silentLogger,
+      );
+
+      // after-phase should be abandoned (budget exhausted before wave 2)
+      expect(result.timedOut).toBe(true);
+      const abandoned = result.failed.find((f) => f.name === 'after-phase');
+      expect(abandoned).toBeDefined();
+    });
   });
 
   describe('Per-phase timeout', () => {

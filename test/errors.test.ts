@@ -38,6 +38,12 @@ describe('StallDetectedError', () => {
     expect(err.message).toContain('phase-b');
     expect(err.message).toContain('phase-c');
   });
+
+  it('handles stalled phases with no waitingOn mapping gracefully', () => {
+    const err = new StallDetectedError(['stuck-phase'], {});
+    expect(err.message).toContain('stuck-phase');
+    expect(err.message).toContain('waiting on: []');
+  });
 });
 
 describe('DuplicatePhaseError', () => {

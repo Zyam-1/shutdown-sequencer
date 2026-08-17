@@ -1,0 +1,66 @@
+{
+  "name": "shutdown-sequencer",
+  "version": "0.1.0",
+  "description": "Dependency-aware, ordered shutdown for Node.js services. Phases run in parallel where possible, with per-phase and global timeouts, and clear diagnostics when something stalls.",
+  "type": "commonjs",
+  "main": "./dist/index.cjs",
+  "module": "./dist/index.js",
+  "types": "./dist/index.d.ts",
+  "exports": {
+    ".": {
+      "import": {
+        "types": "./dist/index.d.ts",
+        "default": "./dist/index.js"
+      },
+      "require": {
+        "types": "./dist/index.d.cts",
+        "default": "./dist/index.cjs"
+      }
+    },
+    "./package.json": "./package.json"
+  },
+  "files": [
+    "dist"
+  ],
+  "engines": {
+    "node": ">=16"
+  },
+  "scripts": {
+    "build": "tsup",
+    "dev": "tsup --watch",
+    "typecheck": "tsc --noEmit",
+    "lint": "eslint src/ test/",
+    "lint:fix": "eslint src/ test/ --fix",
+    "format": "prettier --write \"src/**/*.ts\" \"test/**/*.ts\"",
+    "format:check": "prettier --check \"src/**/*.ts\" \"test/**/*.ts\"",
+    "test": "vitest run",
+    "test:watch": "vitest",
+    "test:coverage": "vitest run --coverage",
+    "prepublishOnly": "npm run lint && npm run typecheck && npm run test && npm run build"
+  },
+  "keywords": [
+    "shutdown",
+    "graceful",
+    "sigterm",
+    "sigint",
+    "process",
+    "exit",
+    "cleanup",
+    "drain",
+    "lifecycle",
+    "kubernetes",
+    "docker"
+  ],
+  "author": "Zyam",
+  "license": "MIT",
+  "devDependencies": {
+    "@types/node": "^26.2.0",
+    "@vitest/coverage-v8": "^4.1.10",
+    "eslint": "^9.29.0",
+    "prettier": "^3.5.3",
+    "tsup": "^8.5.1",
+    "typescript": "~5.7.0",
+    "typescript-eslint": "^8.35.1",
+    "vitest": "^4.1.10"
+  }
+}

@@ -12,7 +12,7 @@ If you discover a security vulnerability in shutdown-sequencer, please report it
 
 **Do not open a public GitHub issue for security vulnerabilities.**
 
-Instead, please email **[your-email@example.com]** with:
+Instead, please email **[zyamm7@gmail.com]** with:
 
 1. A description of the vulnerability
 2. Steps to reproduce

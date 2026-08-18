@@ -1,7 +1,7 @@
 # shutdown-sequencer
 
 [![Bundle Size](https://img.shields.io/badge/bundle-<2KB%20gzipped-brightgreen)](https://bundlephobia.com/package/shutdown-sequencer)
-[![Node](https://img.shields.io/badge/node-%3E%3D16-blue)](https://nodejs.org)
+[![Node](https://img.shields.io/badge/node-%3E%3D20-blue)](https://nodejs.org)
 [![TypeScript](https://img.shields.io/badge/TypeScript-first-blue)](https://www.typescriptlang.org)
 [![Zero Dependencies](https://img.shields.io/badge/dependencies-0-brightgreen)](#)
 
@@ -84,9 +84,24 @@ Install `SIGTERM`/`SIGINT` handlers. Returns `this` for chaining.
 manager.addPhase('drain-http', fn).listen();
 ```
 
-- Calls `process.exit(0)` after successful shutdown, `process.exit(1)` if any phase errored.
+- Calls `process.exit(0)` after successful shutdown, `process.exit(1)` if any phase threw, timed out, or was abandoned at the global deadline.
 - A second signal during shutdown forces `process.exit(1)` immediately (double-signal handling).
 - Logs a warning if running as PID 1 (common Docker misconfiguration).
+
+### `manager.unlisten()`
+
+Remove the signal handlers installed by `listen()`. Returns `this` for chaining.
+
+```ts
+const manager = createShutdownManager().addPhase('drain-http', fn).listen();
+
+// later — detach from the process
+manager.unlisten();
+```
+
+- Safe to call without a prior `listen()`, and safe to call twice — both are no-ops.
+- Mainly for test suites and hot-reload setups that create many managers in one process, where leaked handlers accumulate until Node warns with `MaxListenersExceededWarning`.
+- Detaches handlers only. It does **not** reset `isShuttingDown()` or abort a sequence already running, and during a shutdown it also removes the double-signal force-exit escape hatch.
 
 ### `manager.trigger(signal)`
 
@@ -96,6 +111,21 @@ Manually trigger shutdown. **Does not call `process.exit()`** — resolves when 
 await manager.trigger('test');
 // All phases have run, process is still alive
 ```
+
+- Phase failures do **not** reject the promise — they're reported via `onPhaseError` and the sequence continues.
+- It **does** reject on a malformed dependency graph: `UnknownDependencyError` for a typo in `after`, or `StallDetectedError` for a cycle. Wrap in `try`/`catch` if your graph is built dynamically.
+
+### `manager.isShuttingDown()`
+
+Returns `true` once shutdown has begun, `false` before. Flips synchronously when the signal arrives — before any phase runs — and never flips back.
+
+```ts
+app.get('/readyz', (_req, res) => {
+  res.sendStatus(manager.isShuttingDown() ? 503 : 200);
+});
+```
+
+See [Kubernetes](#kubernetes) for the full probe recipe.
 
 ### Error Classes
 
@@ -121,13 +151,52 @@ Shutdown runs in **waves** (Kahn's algorithm-style topological execution):
 3. Mark all as completed (even if they failed — a partial shutdown is better than a stalled one)
 4. Repeat until done, or detect a stall
 
-A phase that throws or times out is **reported but not fatal** — the sequence continues, because the process is exiting either way.
+A phase that throws or times out is **reported but not fatal** — the sequence continues, because the process is exiting either way. A *malformed graph* is different: an unknown `after` reference or a dependency cycle aborts the sequence, because there is no valid order to run.
 
-## Non-Goals (v1)
+## Kubernetes
 
-These are explicitly **not** in scope for v1:
+The correct shutdown order in Kubernetes is **stop advertising readiness → wait for the endpoints controller to propagate → then drain**. If you drain immediately on `SIGTERM`, new requests still arrive at a pod that's already closing, because removing a pod from Service endpoints is asynchronous.
 
-- Kubernetes readiness/liveness probe integration (use [lightship](https://github.com/gajus/lightship) or [terminus](https://github.com/godaddy/terminus))
+This package deliberately does not bind a port or serve probe endpoints (see [Non-Goals](#non-goals)). Instead it exposes the state, which you wire into the HTTP server you already have:
+
+```ts
+const shutdown = createShutdownManager({ timeout: 30_000 });
+
+// Readiness: fails the moment shutdown begins, so K8s stops sending traffic.
+app.get('/readyz', (_req, res) => {
+  res.sendStatus(shutdown.isShuttingDown() ? 503 : 200);
+});
+
+// Liveness: only answers "is this process running" — keep it independent of
+// shutdown state, or K8s may SIGKILL the pod mid-drain.
+app.get('/healthz', (_req, res) => res.sendStatus(200));
+
+// Give the endpoints controller time to observe the failing readiness probe
+// before draining. Tune to your cluster; 5s is a common starting point.
+shutdown.addPhase('await-endpoint-propagation', () => sleep(5_000));
+
+shutdown.addPhase('drain-http', () => httpTerminator.terminate(), {
+  after: ['await-endpoint-propagation'],
+});
+shutdown.addPhase('close-db', () => pgPool.end(), { after: ['drain-http'] });
+
+shutdown.listen();
+```
+
+The propagation delay is just another phase, so the dependency graph enforces the ordering for you.
+
+Make sure `terminationGracePeriodSeconds` exceeds the manager's global `timeout`, or the kubelet will `SIGKILL` before your phases finish:
+
+```yaml
+spec:
+  terminationGracePeriodSeconds: 40  # > the 30s timeout above
+```
+
+## Non-Goals
+
+These are explicitly **not** in scope:
+
+- **Serving** readiness/liveness endpoints — no port is bound. `isShuttingDown()` gives you the state; wire it into your own server, or use [lightship](https://github.com/gajus/lightship) / [terminus](https://github.com/godaddy/terminus) if you want probe endpoints managed for you.
 - Framework-specific plugins (Express middleware, NestJS module)
 - Retry logic for failed phases
 - Distributed/multi-process coordination
@@ -138,11 +207,14 @@ These are explicitly **not** in scope for v1:
 |---|---|---|---|---|
 | Dependency ordering | ✅ `after: [...]` | ❌ | ❌ | ❌ |
 | Parallel execution | ✅ | N/A | ❌ | ❌ |
-| Per-phase timeouts | ✅ | ✅ (HTTP only) | ✅ (global only) | ✅ (global only) |
+| Per-phase timeouts | ✅ | ✅ (HTTP only) | ❌ (global only) | ❌ (global only) |
 | Stall diagnostics | ✅ | ❌ | ❌ | ❌ |
 | Zero dependencies | ✅ | ✅ | ❌ | ❌ |
-| K8s probe integration | ❌ (non-goal) | ❌ | ✅ | ✅ |
+| Readiness state for probes | ✅ `isShuttingDown()` | ❌ | ✅ | ✅ |
+| Serves probe endpoints | ❌ (non-goal) | ❌ | ✅ | ✅ |
 | Bundle size | <2KB | ~5KB | ~15KB | ~25KB |
+
+Competitor rows reflect their documented behavior at the time of writing; check their current docs before relying on this table.
 
 ## License
 

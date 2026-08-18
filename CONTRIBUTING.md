@@ -29,14 +29,20 @@ npm install
 The CI runs checks in this order, failing fast on the cheapest check:
 
 ```
-lint → typecheck → test → build
+lint → typecheck → test → build → bundle size → package contents → tarball smoke test
 ```
 
-Make sure all four pass locally before pushing.
+Make sure the first four pass locally before pushing:
+
+```bash
+npm run lint && npm run typecheck && npm test && npm run build
+```
+
+The last three gates run only in CI. They guard the published artifact: the gzipped ESM bundle must stay under 2KB, and the packed tarball is installed into a scratch project and loaded via both `require()` and `import()` — which is how a broken `exports` map gets caught before it reaches npm.
 
 ## Coding Rules
 
-This project follows strict coding rules documented in [`CODING_RULES.md`](./CODING_RULES.md). The key points for contributors:
+This project follows strict coding rules, enforced by ESLint and `tsc` where possible:
 
 ### TypeScript
 
@@ -103,10 +109,10 @@ The CI gates catch formatting, type errors, lint violations, and test failures a
 
 ## Scope
 
-Before starting work on a new feature, please open an issue to discuss it. This project has explicit [non-goals](./README.md#non-goals-v1) to keep scope manageable:
+Before starting work on a new feature, please open an issue to discuss it. This project has explicit [non-goals](./README.md#non-goals) to keep scope manageable:
 
-- No Kubernetes readiness/liveness probe integration (v1)
-- No framework-specific plugins (v1)
+- No serving of readiness/liveness endpoints — the package binds no port. `isShuttingDown()` exposes the state for you to wire into your own server.
+- No framework-specific plugins
 - No retry logic for failed phases
 - No distributed/multi-process coordination
 

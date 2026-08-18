@@ -45,7 +45,12 @@ export function createShutdownManager(options?: ShutdownManagerOptions): Shutdow
   const onPhaseError = options?.onPhaseError ?? noop;
 
   const phases = new Map<string, Phase>();
-  let isShuttingDown = false;
+  let shuttingDown = false;
+  // Tracks whether the completed sequence had any phase failures, so
+  // signal-driven shutdown can pick the right exit code. trigger() itself
+  // resolves on phase failure, so the outcome cannot be inferred from the
+  // promise alone.
+  let anyPhaseFailed = false;
   const signalHandlers: Array<{ signal: NodeJS.Signals; handler: () => void }> = [];
 
   /**
@@ -94,8 +99,7 @@ export function createShutdownManager(options?: ShutdownManagerOptions): Shutdow
 
       for (const signal of SHUTDOWN_SIGNALS) {
         const handler = (): void => {
-          logger.log(`[shutdown-sequencer] Received ${signal}, starting shutdown...`);
-          if (isShuttingDown) {
+          if (shuttingDown) {
             // Double-signal force-exit
             logger.log(
               `[shutdown-sequencer] Received ${signal} again during shutdown. Forcing exit.`,
@@ -104,10 +108,12 @@ export function createShutdownManager(options?: ShutdownManagerOptions): Shutdow
             return;
           }
 
+          logger.log(`[shutdown-sequencer] Received ${signal}, starting shutdown...`);
+
           // Run shutdown and exit when complete
           void manager.trigger(signal).then(
             () => {
-              process.exit(SUCCESS_EXIT_CODE);
+              process.exit(anyPhaseFailed ? ERROR_EXIT_CODE : SUCCESS_EXIT_CODE);
             },
             (err: unknown) => {
               logger.log('[shutdown-sequencer] Shutdown completed with errors:', err);
@@ -123,17 +129,28 @@ export function createShutdownManager(options?: ShutdownManagerOptions): Shutdow
       return manager;
     },
 
+    unlisten(): ShutdownManager {
+      for (const { signal, handler } of signalHandlers) {
+        process.removeListener(signal, handler);
+      }
+      signalHandlers.length = 0;
+
+      return manager;
+    },
+
     async trigger(signal: string): Promise<void> {
       // If already shutting down via trigger(), a second trigger() is a no-op.
       // Force-exit is only for signal-based double-invocation (handled in listen()).
-      if (isShuttingDown) {
+      if (shuttingDown) {
         logger.log(
           `[shutdown-sequencer] Shutdown already in progress (triggered by "${signal}"). Ignoring.`,
         );
         return;
       }
 
-      isShuttingDown = true;
+      // Set synchronously, before any await, so isShuttingDown() reports the
+      // draining state to readiness probes from the moment the signal lands.
+      shuttingDown = true;
       logger.log(
         `[shutdown-sequencer] Shutdown triggered (${signal}). ` +
           `${phases.size} phase(s) registered, ${globalTimeout}ms deadline.`,
@@ -160,11 +177,16 @@ export function createShutdownManager(options?: ShutdownManagerOptions): Shutdow
       );
 
       if (result.failed.length > 0) {
+        anyPhaseFailed = true;
         logger.log(
           '[shutdown-sequencer] Failed phases: ' +
             result.failed.map((f) => f.name).join(', '),
         );
       }
+    },
+
+    isShuttingDown(): boolean {
+      return shuttingDown;
     },
   };
 

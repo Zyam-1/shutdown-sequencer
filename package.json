@@ -1,20 +1,20 @@
 {
   "name": "shutdown-sequencer",
-  "version": "0.1.0",
+  "version": "1.0.0",
   "description": "Dependency-aware, ordered shutdown for Node.js services. Phases run in parallel where possible, with per-phase and global timeouts, and clear diagnostics when something stalls.",
   "type": "commonjs",
-  "main": "./dist/index.cjs",
-  "module": "./dist/index.js",
+  "main": "./dist/index.js",
+  "module": "./dist/index.mjs",
   "types": "./dist/index.d.ts",
   "exports": {
     ".": {
       "import": {
-        "types": "./dist/index.d.ts",
-        "default": "./dist/index.js"
+        "types": "./dist/index.d.mts",
+        "default": "./dist/index.mjs"
       },
       "require": {
-        "types": "./dist/index.d.cts",
-        "default": "./dist/index.cjs"
+        "types": "./dist/index.d.ts",
+        "default": "./dist/index.js"
       }
     },
     "./package.json": "./package.json"
@@ -38,6 +38,14 @@
     "test:coverage": "vitest run --coverage",
     "prepublishOnly": "npm run lint && npm run typecheck && npm run test && npm run build"
   },
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/zyam/shutdown-sequencer.git"
+  },
+  "bugs": {
+    "url": "https://github.com/zyam/shutdown-sequencer/issues"
+  },
+  "homepage": "https://github.com/zyam/shutdown-sequencer#readme",
   "keywords": [
     "shutdown",
     "graceful",

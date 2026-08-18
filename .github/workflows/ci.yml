@@ -59,3 +59,21 @@ jobs:
           TARBALL=$(npm pack 2>&1 | tail -1)
           echo "Tarball: ${TARBALL}"
           tar tzf "${TARBALL}" | head -30
+          echo "TARBALL=${PWD}/${TARBALL}" >> "$GITHUB_ENV"
+
+      - name: Smoke test packed tarball (require + import)
+        run: |
+          mkdir -p /tmp/smoke-test && cd /tmp/smoke-test
+          npm init -y >/dev/null
+          npm install "${TARBALL}"
+          node -e "
+            const m = require('shutdown-sequencer');
+            if (typeof m.createShutdownManager !== 'function') throw new Error('require() did not resolve createShutdownManager');
+            console.log('require() OK');
+          "
+          node --input-type=module -e "
+            import('shutdown-sequencer').then((m) => {
+              if (typeof m.createShutdownManager !== 'function') throw new Error('import() did not resolve createShutdownManager');
+              console.log('import() OK');
+            });
+          "

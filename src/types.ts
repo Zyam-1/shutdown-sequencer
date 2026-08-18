@@ -117,16 +117,61 @@ export interface ShutdownManager {
   listen(): ShutdownManager;
 
   /**
+   * Remove the `SIGTERM`/`SIGINT` handlers installed by {@link listen},
+   * detaching this manager from the process.
+   *
+   * Safe to call when {@link listen} was never called, and safe to call more
+   * than once — both are no-ops. If {@link listen} was called repeatedly,
+   * every handler it registered is removed.
+   *
+   * Useful in test suites and hot-reload setups that build many managers in
+   * one process, where leaked handlers otherwise accumulate until Node emits
+   * a `MaxListenersExceededWarning`.
+   *
+   * This only detaches handlers. It does not reset {@link isShuttingDown} or
+   * abort a sequence already in progress — and while a shutdown is running it
+   * also removes the double-signal force-exit escape hatch.
+   *
+   * @returns `this` for chaining
+   */
+  unlisten(): ShutdownManager;
+
+  /**
    * Manually trigger the shutdown sequence. Unlike signal-triggered shutdown,
    * this does **not** call `process.exit()` — it resolves when all phases
-   * complete (or the global deadline is reached), allowing callers to
-   * inspect results or perform additional cleanup.
+   * complete (or the global deadline is reached), leaving the process alive
+   * so callers can perform additional cleanup.
+   *
+   * Individual phase failures do **not** reject this promise — they are
+   * reported via `onPhaseError` and the sequence continues. Only a malformed
+   * dependency graph rejects, since no meaningful shutdown order exists.
    *
    * Primarily useful for testing.
    *
    * @param signal - Descriptive label for logging (e.g., `'test'`, `'manual'`)
    * @throws {@link UnknownDependencyError} if any phase references an
    *   unregistered dependency name
+   * @throws {@link StallDetectedError} if the dependency graph contains a
+   *   cycle, leaving phases that can never become eligible to run
    */
   trigger(signal: string): Promise<void>;
+
+  /**
+   * Whether the shutdown sequence has begun.
+   *
+   * Flips to `true` synchronously when a signal is received (or `trigger()`
+   * is called), before any phase runs, and never returns to `false`.
+   *
+   * The intended use is a Kubernetes readiness probe: report "not ready" as
+   * soon as shutdown starts so the endpoints controller stops routing new
+   * traffic to this pod while in-flight work drains.
+   *
+   * @example
+   * ```ts
+   * app.get('/readyz', (_req, res) => {
+   *   res.sendStatus(shutdown.isShuttingDown() ? 503 : 200);
+   * });
+   * ```
+   */
+  isShuttingDown(): boolean;
 }

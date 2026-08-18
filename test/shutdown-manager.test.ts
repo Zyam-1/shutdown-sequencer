@@ -182,7 +182,7 @@ describe('ShutdownManager', () => {
       expect(exitSpy).toHaveBeenCalledWith(0);
     });
 
-    it('exits with error code 1 when shutdown phase fails via signal listener', () => {
+    it('exits with error code 1 when the dependency graph is invalid', () => {
       const exitSpy = vi.spyOn(process, 'exit').mockImplementation(() => undefined as never);
       const manager = createShutdownManager({ logger: silentLogger() });
       manager.addPhase('failing', () => {}, { after: ['unknown-dep'] }).listen();
@@ -195,6 +195,34 @@ describe('ShutdownManager', () => {
           resolve();
         }, 50);
       });
+    });
+
+    it('exits with error code 1 when a phase throws', async () => {
+      const exitSpy = vi.spyOn(process, 'exit').mockImplementation(() => undefined as never);
+      const manager = createShutdownManager({ logger: silentLogger() });
+      manager.addPhase('failing', () => { throw new Error('boom'); }).listen();
+
+      process.emit('SIGTERM');
+      await new Promise((r) => setTimeout(r, 50));
+
+      // A phase failure resolves trigger() rather than rejecting it, so the
+      // exit code has to come from the recorded phase outcomes.
+      expect(exitSpy).toHaveBeenCalledWith(1);
+      expect(exitSpy).not.toHaveBeenCalledWith(0);
+    });
+
+    it('exits with error code 1 when a phase times out', async () => {
+      const exitSpy = vi.spyOn(process, 'exit').mockImplementation(() => undefined as never);
+      const manager = createShutdownManager({ logger: silentLogger(), timeout: 20 });
+      manager
+        .addPhase('hangs', () => new Promise<void>((r) => setTimeout(r, 500)))
+        .listen();
+
+      process.emit('SIGTERM');
+      await new Promise((r) => setTimeout(r, 100));
+
+      expect(exitSpy).toHaveBeenCalledWith(1);
+      expect(exitSpy).not.toHaveBeenCalledWith(0);
     });
 
     it('forces exit 1 on double signal', () => {
@@ -210,6 +238,131 @@ describe('ShutdownManager', () => {
       process.emit('SIGTERM');
 
       expect(exitSpy).toHaveBeenCalledWith(1);
+    });
+  });
+
+  describe('unlisten()', () => {
+    it('supports fluent chaining', () => {
+      const manager = createShutdownManager({ logger: silentLogger() });
+
+      const result = manager.listen().unlisten();
+
+      expect(result).toBe(manager);
+    });
+
+    it('removes the handlers installed by listen()', () => {
+      const manager = createShutdownManager({ logger: silentLogger() });
+      const baseline = {
+        term: process.listenerCount('SIGTERM'),
+        int: process.listenerCount('SIGINT'),
+      };
+
+      manager.listen();
+      expect(process.listenerCount('SIGTERM')).toBe(baseline.term + 1);
+      expect(process.listenerCount('SIGINT')).toBe(baseline.int + 1);
+
+      manager.unlisten();
+      expect(process.listenerCount('SIGTERM')).toBe(baseline.term);
+      expect(process.listenerCount('SIGINT')).toBe(baseline.int);
+    });
+
+    it('stops signals from triggering shutdown', async () => {
+      const exitSpy = vi.spyOn(process, 'exit').mockImplementation(() => undefined as never);
+      const manager = createShutdownManager({ logger: silentLogger() });
+      let phaseRan = false;
+
+      manager.addPhase('a', () => { phaseRan = true; }).listen().unlisten();
+
+      process.emit('SIGTERM');
+      await new Promise((r) => setTimeout(r, 50));
+
+      expect(phaseRan).toBe(false);
+      expect(exitSpy).not.toHaveBeenCalled();
+      expect(manager.isShuttingDown()).toBe(false);
+    });
+
+    it('is a no-op when listen() was never called', () => {
+      const manager = createShutdownManager({ logger: silentLogger() });
+      const baseline = process.listenerCount('SIGTERM');
+
+      expect(() => manager.unlisten()).not.toThrow();
+      expect(process.listenerCount('SIGTERM')).toBe(baseline);
+    });
+
+    it('is a no-op when called twice', () => {
+      const manager = createShutdownManager({ logger: silentLogger() });
+      const baseline = process.listenerCount('SIGTERM');
+
+      manager.listen().unlisten();
+      expect(() => manager.unlisten()).not.toThrow();
+      expect(process.listenerCount('SIGTERM')).toBe(baseline);
+    });
+
+    it('removes every handler when listen() was called more than once', () => {
+      const manager = createShutdownManager({ logger: silentLogger() });
+      const baseline = process.listenerCount('SIGTERM');
+
+      manager.listen().listen();
+      expect(process.listenerCount('SIGTERM')).toBe(baseline + 2);
+
+      manager.unlisten();
+      expect(process.listenerCount('SIGTERM')).toBe(baseline);
+    });
+
+    it('does not reset shutdown state for an in-progress sequence', async () => {
+      const manager = createShutdownManager({ logger: silentLogger() });
+      manager.addPhase('a', () => {}).listen();
+
+      await manager.trigger('test');
+      manager.unlisten();
+
+      // Readiness must not flip back to "ready" once draining has begun.
+      expect(manager.isShuttingDown()).toBe(true);
+    });
+  });
+
+  describe('isShuttingDown()', () => {
+    it('reports false before shutdown starts', () => {
+      const manager = createShutdownManager({ logger: silentLogger() });
+      manager.addPhase('a', () => {});
+
+      expect(manager.isShuttingDown()).toBe(false);
+    });
+
+    it('reports true from inside a phase, while draining', async () => {
+      const manager = createShutdownManager({ logger: silentLogger() });
+      let observedDuringPhase: boolean | undefined;
+
+      manager.addPhase('drain', () => {
+        observedDuringPhase = manager.isShuttingDown();
+      });
+
+      await manager.trigger('test');
+
+      expect(observedDuringPhase).toBe(true);
+    });
+
+    it('reports true synchronously on signal receipt', () => {
+      vi.spyOn(process, 'exit').mockImplementation(() => undefined as never);
+      const manager = createShutdownManager({ logger: silentLogger() });
+      manager
+        .addPhase('slow', () => new Promise<void>((r) => setTimeout(r, 50)))
+        .listen();
+
+      process.emit('SIGTERM');
+
+      // No await: a readiness probe answering in this same tick must already
+      // see the draining state, otherwise traffic keeps arriving mid-drain.
+      expect(manager.isShuttingDown()).toBe(true);
+    });
+
+    it('remains true after shutdown completes', async () => {
+      const manager = createShutdownManager({ logger: silentLogger() });
+      manager.addPhase('a', () => {});
+
+      await manager.trigger('test');
+
+      expect(manager.isShuttingDown()).toBe(true);
     });
   });
 
